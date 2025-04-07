@@ -33,7 +33,8 @@ The G-Buffer (Geometry Buffer) consists of several textures, each storing differ
 Here's how these buffers are defined in our example code:
 
 ```cpp
-// Framebuffers holding the deferred attachments
+// Define the structure for framebuffer attachments
+// This stores all necessary components for a single attachment (image, memory, view, format)
 struct FrameBufferAttachment {
     VkImage image;
     VkDeviceMemory mem;
@@ -41,13 +42,18 @@ struct FrameBufferAttachment {
     VkFormat format;
 };
 
+// Define the main G-Buffer structure
+// This contains all the attachments needed for deferred rendering
 struct FrameBuffer {
     int32_t width, height;
     VkFramebuffer frameBuffer;
+    // G-Buffer attachments for deferred rendering
     // One attachment for every component required for a deferred rendering setup
-    FrameBufferAttachment position, normal, albedo;
-    FrameBufferAttachment depth;
-    VkRenderPass renderPass;
+    FrameBufferAttachment position;  // For storing world-space positions
+    FrameBufferAttachment normal;    // For storing surface normals
+    FrameBufferAttachment albedo;    // For storing diffuse color and specular intensity
+    FrameBufferAttachment depth;     // For storing depth information
+    VkRenderPass renderPass;         // The render pass for this G-Buffer
 } offScreenFrameBuf{};
 ```
 
@@ -69,64 +75,74 @@ class VulkanExample : public VulkanExampleBase
 public:
 	int32_t debugDisplayTarget = 0;
 
-	struct {
-		struct {
-			vks::Texture2D colorMap;
-			vks::Texture2D normalMap;
-		} model;
-		struct {
-			vks::Texture2D colorMap;
-			vks::Texture2D normalMap;
-		} floor;
-	} textures;
+    // Texture resources
+    struct {
+        struct {
+            vks::Texture2D colorMap;    // Color/diffuse texture for the model
+            vks::Texture2D normalMap;   // Normal map for the model
+        } model;
+        struct {
+            vks::Texture2D colorMap;    // Color/diffuse texture for the floor
+            vks::Texture2D normalMap;   // Normal map for the floor
+        } floor;
+    } textures;
 
-	struct {
-		vkglTF::Model model;
-		vkglTF::Model floor;
-	} models;
+    // 3D models
+    struct {
+        vkglTF::Model model;    // Main model to render
+        vkglTF::Model floor;    // Floor model
+    } models;
 
-	struct UniformDataOffscreen  {
-		glm::mat4 projection;
-		glm::mat4 model;
-		glm::mat4 view;
-		glm::vec4 instancePos[3];
-	} uniformDataOffscreen;
+    // Uniform buffer for the offscreen rendering pass (G-Buffer generation)
+    struct UniformDataOffscreen  {
+        glm::mat4 projection;     // Projection matrix
+        glm::mat4 model;          // Model matrix
+        glm::mat4 view;           // View matrix
+        glm::vec4 instancePos[3]; // Instance positions for rendering multiple objects
+    } uniformDataOffscreen;
 
-	struct Light {
-		glm::vec4 position;
-		glm::vec3 color;
-		float radius;
-	};
+    // Light definition structure for the lighting pass
+    struct Light {
+        glm::vec4 position;   // Position of the light
+        glm::vec3 color;      // Color of the light
+        float radius;         // Radius/range of light influence
+    };
 
-	struct UniformDataComposition {
-		Light lights[6];
-		glm::vec4 viewPos;
-		int debugDisplayTarget = 0;
-	} uniformDataComposition;
+    // Uniform buffer for the composition/lighting pass
+    struct UniformDataComposition {
+        Light lights[6];            // Array of light sources
+        glm::vec4 viewPos;          // Camera position for specular calculations
+        int debugDisplayTarget = 0; // Controls debug display mode
+    } uniformDataComposition;
 
-	struct {
-		vks::Buffer offscreen;
-		vks::Buffer composition;
-	} uniformBuffers;
+    // Uniform buffers
+    struct {
+        vks::Buffer offscreen;    // Buffer for the G-Buffer generation pass
+        vks::Buffer composition;  // Buffer for the lighting/composition pass
+    } uniformBuffers;
 
-	struct {
-		VkPipeline offscreen{ VK_NULL_HANDLE };
-		VkPipeline composition{ VK_NULL_HANDLE };
-	} pipelines;
-	VkPipelineLayout pipelineLayout{ VK_NULL_HANDLE };
+    // Graphics pipelines
+    struct {
+        VkPipeline offscreen{ VK_NULL_HANDLE };   // Pipeline for G-Buffer generation
+        VkPipeline composition{ VK_NULL_HANDLE }; // Pipeline for lighting/composition
+    } pipelines;
+    
+    VkPipelineLayout pipelineLayout{ VK_NULL_HANDLE }; // Pipeline layout for shader uniform bindings
 
-	struct {
-		VkDescriptorSet model{ VK_NULL_HANDLE };
-		VkDescriptorSet floor{ VK_NULL_HANDLE };
-		VkDescriptorSet composition{ VK_NULL_HANDLE };
-	} descriptorSets;
+    // Descriptor sets
+    struct {
+        VkDescriptorSet model{ VK_NULL_HANDLE };       // For rendering the model to G-Buffer
+        VkDescriptorSet floor{ VK_NULL_HANDLE };       // For rendering the floor to G-Buffer
+        VkDescriptorSet composition{ VK_NULL_HANDLE }; // For the lighting/composition pass
+    } descriptorSets;
 
 	VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
 
-	// One sampler for the frame buffer color attachments
-	VkSampler colorSampler{ VK_NULL_HANDLE };
+    // Sampler for G-Buffer texture sampling
+    VkSampler colorSampler{ VK_NULL_HANDLE };
 
-	VkCommandBuffer offScreenCmdBuffer{ VK_NULL_HANDLE };
+    // Command buffer for offscreen rendering (G-Buffer generation)
+    VkCommandBuffer offScreenCmdBuffer{ VK_NULL_HANDLE };
 
 	// Semaphore used to synchronize between offscreen and final scene rendering
 	VkSemaphore offscreenSemaphore{ VK_NULL_HANDLE };
@@ -147,45 +163,50 @@ public:
 		if (device) {
 			vkDestroySampler(device, colorSampler, nullptr);
 
-			// Frame buffer
+            // Clean up G-Buffer resources
 
-			// Color attachments
-			vkDestroyImageView(device, offScreenFrameBuf.position.view, nullptr);
-			vkDestroyImage(device, offScreenFrameBuf.position.image, nullptr);
-			vkFreeMemory(device, offScreenFrameBuf.position.mem, nullptr);
+            // Position attachment
+            vkDestroyImageView(device, offScreenFrameBuf.position.view, nullptr);
+            vkDestroyImage(device, offScreenFrameBuf.position.image, nullptr);
+            vkFreeMemory(device, offScreenFrameBuf.position.mem, nullptr);
 
-			vkDestroyImageView(device, offScreenFrameBuf.normal.view, nullptr);
-			vkDestroyImage(device, offScreenFrameBuf.normal.image, nullptr);
-			vkFreeMemory(device, offScreenFrameBuf.normal.mem, nullptr);
+            // Normal attachment
+            vkDestroyImageView(device, offScreenFrameBuf.normal.view, nullptr);
+            vkDestroyImage(device, offScreenFrameBuf.normal.image, nullptr);
+            vkFreeMemory(device, offScreenFrameBuf.normal.mem, nullptr);
 
-			vkDestroyImageView(device, offScreenFrameBuf.albedo.view, nullptr);
-			vkDestroyImage(device, offScreenFrameBuf.albedo.image, nullptr);
-			vkFreeMemory(device, offScreenFrameBuf.albedo.mem, nullptr);
+            // Albedo attachment
+            vkDestroyImageView(device, offScreenFrameBuf.albedo.view, nullptr);
+            vkDestroyImage(device, offScreenFrameBuf.albedo.image, nullptr);
+            vkFreeMemory(device, offScreenFrameBuf.albedo.mem, nullptr);
 
 			// Depth attachment
 			vkDestroyImageView(device, offScreenFrameBuf.depth.view, nullptr);
 			vkDestroyImage(device, offScreenFrameBuf.depth.image, nullptr);
 			vkFreeMemory(device, offScreenFrameBuf.depth.mem, nullptr);
 
-			vkDestroyFramebuffer(device, offScreenFrameBuf.frameBuffer, nullptr);
+            // Framebuffer
+            vkDestroyFramebuffer(device, offScreenFrameBuf.frameBuffer, nullptr);
 
-			vkDestroyPipeline(device, pipelines.composition, nullptr);
-			vkDestroyPipeline(device, pipelines.offscreen, nullptr);
+            // Pipelines
+            vkDestroyPipeline(device, pipelines.composition, nullptr);
+            vkDestroyPipeline(device, pipelines.offscreen, nullptr);
 
-			vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 
 			vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
-			// Uniform buffers
-			uniformBuffers.offscreen.destroy();
-			uniformBuffers.composition.destroy();
+            // Uniform buffers
+            uniformBuffers.offscreen.destroy();
+            uniformBuffers.composition.destroy();
 
 			vkDestroyRenderPass(device, offScreenFrameBuf.renderPass, nullptr);
 
-			textures.model.colorMap.destroy();
-			textures.model.normalMap.destroy();
-			textures.floor.colorMap.destroy();
-			textures.floor.normalMap.destroy();
+            // Textures
+            textures.model.colorMap.destroy();
+            textures.model.normalMap.destroy();
+            textures.floor.colorMap.destroy();
+            textures.floor.normalMap.destroy();
 
 			vkDestroySemaphore(device, offscreenSemaphore, nullptr);
 		}
@@ -201,40 +222,42 @@ First, we need to create the framebuffer attachments for our G-Buffer:
 // Prepare a new framebuffer and attachments for offscreen rendering (G-Buffer)
 void prepareOffscreenFramebuffer()
 {
-    // Note: Instead of using fixed sizes, one could also match the window size and recreate the attachments on resize
+    // Fixed size for the G-Buffer (independent of window size)
+    // In a real application, you might want to match window size and recreate on resize
     offScreenFrameBuf.width = 2048;
     offScreenFrameBuf.height = 2048;
 
-    // Color attachments
+    // Create G-Buffer color attachments
 
-    // (World space) Positions
+    // Position buffer: Stores world-space positions with high precision
     createAttachment(
-        VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_FORMAT_R16G16B16A16_SFLOAT,         // High precision format for position data
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,   // Will be used as a color attachment
         &offScreenFrameBuf.position);
 
-    // (World space) Normals
+    // Normal buffer: Stores world-space normals with high precision
     createAttachment(
-        VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_FORMAT_R16G16B16A16_SFLOAT,         // High precision format for normal data
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,   // Will be used as a color attachment
         &offScreenFrameBuf.normal);
 
-    // Albedo (color)
+    // Albedo buffer: Stores diffuse color (and specular in alpha)
     createAttachment(
-        VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_FORMAT_R8G8B8A8_UNORM,              // Standard format is sufficient for color
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,   // Will be used as a color attachment
         &offScreenFrameBuf.albedo);
 
-    // Depth attachment
+    // Create depth attachment
 
-    // Find a suitable depth format
+    // Find a suitable depth format supported by the device
     VkFormat attDepthFormat;
     VkBool32 validDepthFormat = vks::tools::getSupportedDepthFormat(physicalDevice, &attDepthFormat);
     assert(validDepthFormat);
 
+    // Create the depth attachment
     createAttachment(
         attDepthFormat,
-        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,  // Will be used as depth/stencil
         &offScreenFrameBuf.depth);
     
     // Set up separate renderpass with references to the color and depth attachments
@@ -245,31 +268,42 @@ void prepareOffscreenFramebuffer()
 Let's look at how the attachments are created:
 
 ```cpp
+// Helper function to create a framebuffer attachment
+// Creates the image, allocates memory, and creates the image view
 void createAttachment(
-    VkFormat format,
-    VkImageUsageFlagBits usage,
-    FrameBufferAttachment *attachment)
+    VkFormat format,                  // Format for the attachment
+    VkImageUsageFlagBits usage,       // How the attachment will be used
+    FrameBufferAttachment *attachment // Output attachment object
+)
 {
+    // Determine aspect mask and layout based on attachment type
     VkImageAspectFlags aspectMask = 0;
     VkImageLayout imageLayout;
 
+    // Store the format
     attachment->format = format;
 
+    // Setup based on whether this is a color or depth attachment
     if (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
     {
+        // For color attachments, use color aspect and optimal color layout
         aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
     if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
     {
+        // For depth attachments, use depth aspect and optimal depth layout
         aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        // Add stencil aspect if the format includes stencil
         if (format >= VK_FORMAT_D16_UNORM_S8_UINT)
-            aspectMask |=VK_IMAGE_ASPECT_STENCIL_BIT;
+            aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
         imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
+    // Make sure we have a valid aspect mask
     assert(aspectMask > 0);
 
+    // Create image for the attachment
     VkImageCreateInfo image = vks::initializers::imageCreateInfo();
     image.imageType = VK_IMAGE_TYPE_2D;
     image.format = format;
@@ -280,18 +314,27 @@ void createAttachment(
     image.arrayLayers = 1;
     image.samples = VK_SAMPLE_COUNT_1_BIT;
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
+    // Add SAMPLED bit so we can read from it in shader
     image.usage = usage | VK_IMAGE_USAGE_SAMPLED_BIT;
 
+    // Allocate memory for the image
     VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
     VkMemoryRequirements memReqs;
 
+    // Create the image
     VK_CHECK_RESULT(vkCreateImage(device, &image, nullptr, &attachment->image));
+    
+    // Get memory requirements based on image
     vkGetImageMemoryRequirements(device, attachment->image, &memReqs);
     memAlloc.allocationSize = memReqs.size;
+    // Get appropriate memory type
     memAlloc.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    // Allocate and bind memory
     VK_CHECK_RESULT(vkAllocateMemory(device, &memAlloc, nullptr, &attachment->mem));
     VK_CHECK_RESULT(vkBindImageMemory(device, attachment->image, attachment->mem, 0));
 
+    // Create image view
     VkImageViewCreateInfo imageView = vks::initializers::imageViewCreateInfo();
     imageView.viewType = VK_IMAGE_VIEW_TYPE_2D;
     imageView.format = format;
@@ -302,6 +345,8 @@ void createAttachment(
     imageView.subresourceRange.baseArrayLayer = 0;
     imageView.subresourceRange.layerCount = 1;
     imageView.image = attachment->image;
+    
+    // Create the view
     VK_CHECK_RESULT(vkCreateImageView(device, &imageView, nullptr, &attachment->view));
 }
 ```
@@ -316,43 +361,53 @@ From `prepareOffscreenFramebuffer()`:
 ```cpp
 ...
    // Set up separate renderpass with references to the color and depth attachments
+   // This section creates a render pass that will write to our G-Buffer attachments
+   
+   // Create an array of attachment descriptions for all our G-Buffer components
    std::array<VkAttachmentDescription, 4> attachmentDescs = {};
    
-   // Init attachment properties
+   // Set common properties for all attachments
    for (uint32_t i = 0; i < 4; ++i)
    {
-       attachmentDescs[i].samples = VK_SAMPLE_COUNT_1_BIT;
-       attachmentDescs[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-       attachmentDescs[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-       attachmentDescs[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-       attachmentDescs[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-       if (i == 3)
+       attachmentDescs[i].samples = VK_SAMPLE_COUNT_1_BIT;         // No MSAA
+       attachmentDescs[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;    // Clear at start
+       attachmentDescs[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;  // Store at end
+       attachmentDescs[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // No stencil
+       attachmentDescs[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; // No stencil
+       
+       // Set initial and final layouts based on attachment type
+       if (i == 3) // Depth attachment has different layout
        {
            attachmentDescs[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
            attachmentDescs[i].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
        }
-       else
+       else // Color attachments
        {
            attachmentDescs[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+           // Set final layout to shader read optimal so we can sample in composition pass
            attachmentDescs[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
        }
    }
    
-   // Formats
-   attachmentDescs[0].format = offScreenFrameBuf.position.format;
-   attachmentDescs[1].format = offScreenFrameBuf.normal.format;
-   attachmentDescs[2].format = offScreenFrameBuf.albedo.format;
-   attachmentDescs[3].format = offScreenFrameBuf.depth.format;
+   // Assign formats to the attachments
+   attachmentDescs[0].format = offScreenFrameBuf.position.format;  // Position
+   attachmentDescs[1].format = offScreenFrameBuf.normal.format;    // Normal
+   attachmentDescs[2].format = offScreenFrameBuf.albedo.format;    // Albedo
+   attachmentDescs[3].format = offScreenFrameBuf.depth.format;     // Depth
    
+   // Set up attachment references for the subpass
+   // These link the attachments to specific binding points in the fragment shader
    std::vector<VkAttachmentReference> colorReferences;
-   colorReferences.push_back({ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
-   colorReferences.push_back({ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
-   colorReferences.push_back({ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
+   colorReferences.push_back({ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });  // Position
+   colorReferences.push_back({ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });  // Normal
+   colorReferences.push_back({ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });  // Albedo
    
+   // Depth attachment reference
    VkAttachmentReference depthReference = {};
    depthReference.attachment = 3;
    depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
    
+   // Define the render subpass
    VkSubpassDescription subpass = {};
    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
    subpass.pColorAttachments = colorReferences.data();
@@ -360,24 +415,28 @@ From `prepareOffscreenFramebuffer()`:
    subpass.pDepthStencilAttachment = &depthReference;
    
    // Use subpass dependencies for attachment layout transitions
+   // These control the timing of the layout transitions
    std::array<VkSubpassDependency, 2> dependencies;
    
-   dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-   dependencies[0].dstSubpass = 0;
+   // Dependency at the start of the render pass
+   dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;  // Before the render pass
+   dependencies[0].dstSubpass = 0;                    // Our subpass
    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
    dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
    dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
    
-   dependencies[1].srcSubpass = 0;
-   dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+   // Dependency at the end of the render pass
+   dependencies[1].srcSubpass = 0;                    // Our subpass
+   dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;  // After the render pass
    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
    dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
    dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
    
+   // Create the render pass
    VkRenderPassCreateInfo renderPassInfo = {};
    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
    renderPassInfo.pAttachments = attachmentDescs.data();
@@ -387,14 +446,17 @@ From `prepareOffscreenFramebuffer()`:
    renderPassInfo.dependencyCount = 2;
    renderPassInfo.pDependencies = dependencies.data();
    
+   // Create the actual render pass object
    VK_CHECK_RESULT(vkCreateRenderPass(device, &renderPassInfo, nullptr, &offScreenFrameBuf.renderPass));
    
+   // Create the framebuffer with all attachments
    std::array<VkImageView,4> attachments;
    attachments[0] = offScreenFrameBuf.position.view;
    attachments[1] = offScreenFrameBuf.normal.view;
    attachments[2] = offScreenFrameBuf.albedo.view;
    attachments[3] = offScreenFrameBuf.depth.view;
    
+   // Create the framebuffer
    VkFramebufferCreateInfo fbufCreateInfo = {};
    fbufCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
    fbufCreateInfo.pNext = NULL;
@@ -407,8 +469,9 @@ From `prepareOffscreenFramebuffer()`:
    VK_CHECK_RESULT(vkCreateFramebuffer(device, &fbufCreateInfo, nullptr, &offScreenFrameBuf.frameBuffer));
    
    // Create sampler to sample from the color attachments
+   // This will be used in the lighting/composition pass to read from G-Buffer
    VkSamplerCreateInfo sampler = vks::initializers::samplerCreateInfo();
-   sampler.magFilter = VK_FILTER_NEAREST;
+   sampler.magFilter = VK_FILTER_NEAREST;    // Use nearest filtering for precision
    sampler.minFilter = VK_FILTER_NEAREST;
    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -431,33 +494,38 @@ In the geometry pass, we render the scene geometry to populate the G-Buffer. Thi
 ```glsl
 #version 450
 
-layout (binding = 1) uniform sampler2D samplerColor;
-layout (binding = 2) uniform sampler2D samplerNormalMap;
+// Input textures from the descriptor set
+layout (binding = 1) uniform sampler2D samplerColor;     // Albedo/color texture
+layout (binding = 2) uniform sampler2D samplerNormalMap; // Normal map texture
 
-layout (location = 0) in vec3 inNormal;
-layout (location = 1) in vec2 inUV;
-layout (location = 2) in vec3 inColor;
-layout (location = 3) in vec3 inWorldPos;
-layout (location = 4) in vec3 inTangent;
+// Inputs from the vertex shader
+layout (location = 0) in vec3 inNormal;    // Vertex normal
+layout (location = 1) in vec2 inUV;        // Texture coordinates
+layout (location = 2) in vec3 inColor;     // Vertex color
+layout (location = 3) in vec3 inWorldPos;  // World position
+layout (location = 4) in vec3 inTangent;   // Tangent vector for normal mapping
 
-layout (location = 0) out vec4 outPosition;
-layout (location = 1) out vec4 outNormal;
-layout (location = 2) out vec4 outAlbedo;
+// Multiple render target outputs - each one writes to a different G-Buffer texture
+layout (location = 0) out vec4 outPosition; // Output world position
+layout (location = 1) out vec4 outNormal;   // Output normal vector
+layout (location = 2) out vec4 outAlbedo;   // Output color/albedo
 
 void main() 
 {
-    // Output world position
+    // Output 1: World position to the position G-Buffer
     outPosition = vec4(inWorldPos, 1.0);
 
-    // Calculate normal in tangent space
+    // Output 2: Calculate and output normal in tangent space
     vec3 N = normalize(inNormal);
     vec3 T = normalize(inTangent);
-    vec3 B = cross(N, T);
-    mat3 TBN = mat3(T, B, N);
+    vec3 B = cross(N, T);           // Calculate bitangent vector
+    mat3 TBN = mat3(T, B, N);       // Create tangent-to-world space matrix
+    
+    // Sample normal map and transform normal from tangent to world space
     vec3 tnorm = TBN * normalize(texture(samplerNormalMap, inUV).xyz * 2.0 - vec3(1.0));
     outNormal = vec4(tnorm, 1.0);
 
-    // Output albedo (color)
+    // Output 3: Sample and output albedo (color) from texture
     outAlbedo = texture(samplerColor, inUV);
 }
 ```
@@ -468,42 +536,50 @@ The vertex shader provides the necessary inputs:
 ```glsl
 #version 450
 
-layout (location = 0) in vec4 inPos;
-layout (location = 1) in vec2 inUV;
-layout (location = 2) in vec3 inColor;
-layout (location = 3) in vec3 inNormal;
-layout (location = 4) in vec3 inTangent;
+// Vertex input attributes
+layout (location = 0) in vec4 inPos;      // Vertex position
+layout (location = 1) in vec2 inUV;       // Texture coordinates
+layout (location = 2) in vec3 inColor;    // Vertex color
+layout (location = 3) in vec3 inNormal;   // Vertex normal
+layout (location = 4) in vec3 inTangent;  // Vertex tangent
 
+// Uniform buffer containing transformations and instance data
 layout (binding = 0) uniform UBO 
 {
-    mat4 projection;
-    mat4 model;
-    mat4 view;
-    vec4 instancePos[3];
+    mat4 projection;        // Projection matrix
+    mat4 model;             // Model matrix
+    mat4 view;              // View matrix
+    vec4 instancePos[3];    // Positions for instanced rendering
 } ubo;
 
-layout (location = 0) out vec3 outNormal;
-layout (location = 1) out vec2 outUV;
-layout (location = 2) out vec3 outColor;
-layout (location = 3) out vec3 outWorldPos;
-layout (location = 4) out vec3 outTangent;
+// Outputs to fragment shader
+layout (location = 0) out vec3 outNormal;   // Normal vector
+layout (location = 1) out vec2 outUV;       // Texture coordinates
+layout (location = 2) out vec3 outColor;    // Vertex color
+layout (location = 3) out vec3 outWorldPos; // World position
+layout (location = 4) out vec3 outTangent;  // Tangent vector
 
 void main() 
 {
+    // Add instance position offset (for instanced rendering)
     vec4 tmpPos = inPos + ubo.instancePos[gl_InstanceIndex];
+    
+    // Calculate clip space position
     gl_Position = ubo.projection * ubo.view * ubo.model * tmpPos;
     
+    // Pass texture coordinates to fragment shader
     outUV = inUV;
 
-    // Vertex position in world space
+    // Calculate world space position
     outWorldPos = vec3(ubo.model * tmpPos);
     
-    // Normal in world space
+    // Calculate normal in world space
+    // Use inverse transpose for correct normal transformation
     mat3 mNormal = transpose(inverse(mat3(ubo.model)));
     outNormal = mNormal * normalize(inNormal);    
     outTangent = mNormal * normalize(inTangent);
     
-    // Currently just vertex color
+    // Pass vertex color to fragment shader
     outColor = inColor;
 }
 ```
@@ -511,57 +587,75 @@ void main()
 The command buffer for this pass renders all scene geometry to the G-Buffer:
 
 ```cpp
-// Build command buffer for rendering the scene to the offscreen frame buffer attachments
+// Build command buffer for rendering the scene to the offscreen G-Buffer
+// This creates a command buffer that writes to all G-Buffer attachments
 void buildDeferredCommandBuffer()
 {
+    // Create command buffer if it doesn't exist yet
     if (offScreenCmdBuffer == VK_NULL_HANDLE) {
         offScreenCmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, false);
     }
 
-    // Create a semaphore used to synchronize offscreen rendering and usage
+    // Create a semaphore for synchronizing offscreen rendering and composition pass
     VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
     VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &offscreenSemaphore));
 
+    // Set up command buffer begin info
     VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
-    // Clear values for all attachments written in the fragment shader
+    // Set up clear values for all G-Buffer attachments
     std::array<VkClearValue,4> clearValues;
-    clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
-    clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
-    clearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
-    clearValues[3].depthStencil = { 1.0f, 0 };
+    clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };      // Position buffer (black)
+    clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };      // Normal buffer (black)
+    clearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };      // Albedo buffer (black)
+    clearValues[3].depthStencil = { 1.0f, 0 };                  // Depth buffer (far)
 
+    // Set up render pass begin info
     VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
-    renderPassBeginInfo.renderPass =  offScreenFrameBuf.renderPass;
+    renderPassBeginInfo.renderPass = offScreenFrameBuf.renderPass;
     renderPassBeginInfo.framebuffer = offScreenFrameBuf.frameBuffer;
     renderPassBeginInfo.renderArea.extent.width = offScreenFrameBuf.width;
     renderPassBeginInfo.renderArea.extent.height = offScreenFrameBuf.height;
     renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassBeginInfo.pClearValues = clearValues.data();
 
+    // Begin command buffer recording
     VK_CHECK_RESULT(vkBeginCommandBuffer(offScreenCmdBuffer, &cmdBufInfo));
 
+    // Begin the render pass - this is when our attachments get cleared
     vkCmdBeginRenderPass(offScreenCmdBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
+    // Set the viewport - this defines where we render (the entire framebuffer in this case)
     VkViewport viewport = vks::initializers::viewport((float)offScreenFrameBuf.width, (float)offScreenFrameBuf.height, 0.0f, 1.0f);
     vkCmdSetViewport(offScreenCmdBuffer, 0, 1, &viewport);
 
+    // Set the scissor rectangle - this defines where rendering is clipped (the entire framebuffer in this case)
     VkRect2D scissor = vks::initializers::rect2D(offScreenFrameBuf.width, offScreenFrameBuf.height, 0, 0);
     vkCmdSetScissor(offScreenCmdBuffer, 0, 1, &scissor);
 
+    // Bind the pipeline for G-Buffer generation
+    // This pipeline contains the shaders that will write to multiple render targets
     vkCmdBindPipeline(offScreenCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.offscreen);
 
-    // Floor
+    // Render floor first
+    // First bind the floor's descriptors containing textures and uniform buffers
     vkCmdBindDescriptorSets(offScreenCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets.floor, 0, nullptr);
+    // Draw the floor model
     models.floor.draw(offScreenCmdBuffer);
 
-    // We render multiple instances of a model
+    // Render 3D model with instancing
+    // The same model will be drawn at multiple locations using instancing
     vkCmdBindDescriptorSets(offScreenCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets.model, 0, nullptr);
+    // Bind the model's vertex and index buffers
     models.model.bindBuffers(offScreenCmdBuffer);
+    // Draw 3 instances of the model
+    // The instance positions are defined in the vertex shader via instancePos array
     vkCmdDrawIndexed(offScreenCmdBuffer, models.model.indices.count, 3, 0, 0, 0);
 
+    // End the render pass - this is when the G-Buffer textures are transitioned to be readable in the next pass
     vkCmdEndRenderPass(offScreenCmdBuffer);
 
+    // Finish recording the command buffer
     VK_CHECK_RESULT(vkEndCommandBuffer(offScreenCmdBuffer));
 }
 ```
@@ -670,12 +764,26 @@ After filling the G-Buffer, we perform the lighting pass. This is where we calcu
 ```glsl
 #version 450
 
+// Output texture coordinates to the fragment shader
+// These will be used to sample from the G-Buffer textures
 layout (location = 0) out vec2 outUV;
 
-void main() 
+void main()
 {
-    outUV = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-    gl_Position = vec4(outUV * 2.0f - 1.0f, 0.0f, 1.0f);
+   // This is a clever trick to render a full-screen triangle with just 3 vertices
+   // without needing any vertex buffer or vertex input
+
+   // When gl_VertexIndex is:
+   // 0 -> outUV = (0,0) -> bottom-left corner
+   // 1 -> outUV = (2,0) -> bottom-right (extends beyond screen)
+   // 2 -> outUV = (0,2) -> top-left (extends beyond screen)
+   // This creates a large triangle that covers the entire screen with just 3 vertices
+   outUV = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+
+   // Convert UV coordinates to normalized device coordinates (NDC)
+   // Transforms from [0,2] range to [-1,1] range needed for clip space
+   // The z=0 (middle of clip space) and w=1 (no perspective division effect)
+   gl_Position = vec4(outUV * 2.0f - 1.0f, 0.0f, 1.0f);
 }
 ```
 
@@ -685,150 +793,201 @@ The fragment shader does the heavy lifting, sampling from the G-Buffer and perfo
 ```glsl
 #version 450
 
-layout (binding = 1) uniform sampler2D samplerposition;
-layout (binding = 2) uniform sampler2D samplerNormal;
-layout (binding = 3) uniform sampler2D samplerAlbedo;
+// G-Buffer texture samplers - each represents one component of our G-Buffer
+layout (binding = 1) uniform sampler2D samplerposition;  // World space positions 
+layout (binding = 2) uniform sampler2D samplerNormal;    // Surface normals
+layout (binding = 3) uniform sampler2D samplerAlbedo;    // Diffuse color + specular intensity
 
+// Input texture coordinates from vertex shader
+// Used to sample from our G-Buffer textures
 layout (location = 0) in vec2 inUV;
 
+// Output final color after lighting
 layout (location = 0) out vec4 outFragcolor;
 
+// Light source definition
 struct Light {
-    vec4 position;
-    vec3 color;
-    float radius;
+   vec4 position;    // World space position of the light
+   vec3 color;       // RGB color/intensity of the light
+   float radius;     // Radius of influence (for attenuation)
 };
 
-layout (binding = 4) uniform UBO 
+// Uniform buffer containing all lighting information
+layout (binding = 4) uniform UBO
 {
-    Light lights[6];
-    vec4 viewPos;
-    int displayDebugTarget;
+   Light lights[6];          // Array of 6 light sources
+   vec4 viewPos;             // Camera position (for specular calculations)
+   int displayDebugTarget;   // Which G-Buffer to display (debugging)
 } ubo;
 
-void main() 
+void main()
 {
-    // Get G-Buffer values
-    vec3 fragPos = texture(samplerposition, inUV).rgb;
-    vec3 normal = texture(samplerNormal, inUV).rgb;
-    vec4 albedo = texture(samplerAlbedo, inUV);
-    
-    // Debug display
-    if (ubo.displayDebugTarget > 0) {
-        switch (ubo.displayDebugTarget) {
-            case 1: 
-                outFragcolor.rgb = fragPos;
-                break;
-            case 2: 
-                outFragcolor.rgb = normal;
-                break;
-            case 3: 
-                outFragcolor.rgb = albedo.rgb;
-                break;
-            case 4: 
-                outFragcolor.rgb = albedo.aaa;
-                break;
-        }        
-        outFragcolor.a = 1.0;
-        return;
-    }
+   // Step 1: Sample all relevant data from G-Buffer textures at the current fragment's UV
+   vec3 fragPos = texture(samplerposition, inUV).rgb;  // World position
+   vec3 normal = texture(samplerNormal, inUV).rgb;     // Surface normal
+   vec4 albedo = texture(samplerAlbedo, inUV);         // RGB = diffuse color, A = specular intensity
 
-    // Render-target composition
+   // Step 2: Debug visualization mode
+   // If enabled, we'll just display one of the G-Buffer components directly
+   if (ubo.displayDebugTarget > 0) {
+      switch (ubo.displayDebugTarget) {
+         case 1:
+              outFragcolor.rgb = fragPos;   // Show world positions
+              break;
+         case 2:
+              outFragcolor.rgb = normal;    // Show normals
+              break;
+         case 3:
+              outFragcolor.rgb = albedo.rgb;  // Show albedo/diffuse color
+              break;
+         case 4:
+              outFragcolor.rgb = albedo.aaa;  // Show specular intensity (stored in alpha)
+              break;
+      }
+      outFragcolor.a = 1.0;  // Full opacity
+      return;                // Skip lighting calculations
+   }
 
-    #define lightCount 6
-    #define ambient 0.0
-    
-    // Ambient part
-    vec3 fragcolor  = albedo.rgb * ambient;
-    
-    for(int i = 0; i < lightCount; ++i)
-    {
-        // Vector to light
-        vec3 L = ubo.lights[i].position.xyz - fragPos;
-        // Distance from light to fragment position
-        float dist = length(L);
+   // Step 3: Start composition with ambient lighting
+   #define lightCount 6       // Number of lights to process
+    #define ambient 0.0        // Ambient light level (0.0 = no ambient)
 
-        // Viewer to fragment
-        vec3 V = ubo.viewPos.xyz - fragPos;
-        V = normalize(V);
-        
-        //if(dist < ubo.lights[i].radius)
-        {
-            // Light to fragment
-            L = normalize(L);
+   // Initialize with ambient light contribution only
+   // Since ambient is 0, this starts with black color
+   vec3 fragcolor = albedo.rgb * ambient;
 
-            // Attenuation
-            float atten = ubo.lights[i].radius / (pow(dist, 2.0) + 1.0);
+   // Step 4: Calculate contribution from each light source
+   for(int i = 0; i < lightCount; ++i)
+   {
+      // Calculate vector from fragment to light
+      vec3 L = ubo.lights[i].position.xyz - fragPos;
 
-            // Diffuse part
-            vec3 N = normalize(normal);
-            float NdotL = max(0.0, dot(N, L));
-            vec3 diff = ubo.lights[i].color * albedo.rgb * NdotL * atten;
+      // Calculate distance to light for attenuation
+      float dist = length(L);
 
-            // Specular part
-            // Specular map values are stored in alpha of albedo mrt
-            vec3 R = reflect(-L, N);
-            float NdotR = max(0.0, dot(R, V));
-            vec3 spec = ubo.lights[i].color * albedo.a * pow(NdotR, 16.0) * atten;
+      // Calculate view vector (fragment to camera)
+      vec3 V = ubo.viewPos.xyz - fragPos;
+      V = normalize(V);
 
-            fragcolor += diff + spec;    
-        }    
-    }    
-   
-    outFragcolor = vec4(fragcolor, 1.0);    
+      // We could check if the fragment is within light radius
+      // and skip calculation if it's too far, but we don't here
+      //if(dist < ubo.lights[i].radius)
+      {
+         // Normalize light direction vector
+         L = normalize(L);
+
+         // Step 5: Calculate light attenuation (falloff with distance)
+         // This formula gives a smooth quadratic falloff that doesn't go to zero
+         float atten = ubo.lights[i].radius / (pow(dist, 2.0) + 1.0);
+
+         // Step 6: Calculate diffuse lighting (Lambert model)
+         vec3 N = normalize(normal);
+         // NdotL = cosine of angle between light and normal
+         // Max prevents negative lighting when light is behind surface
+         float NdotL = max(0.0, dot(N, L));
+         // Diffuse = light color * surface color * light angle * attenuation
+         vec3 diff = ubo.lights[i].color * albedo.rgb * NdotL * atten;
+
+         // Step 7: Calculate specular lighting (Phong model)
+         // Calculate reflection vector
+         vec3 R = reflect(-L, N);
+         // Calculate angle between reflection and view direction
+         float NdotR = max(0.0, dot(R, V));
+         // Apply specular power for a tighter highlight (16.0)
+         // Use albedo.a as specular intensity/shininess
+         vec3 spec = ubo.lights[i].color * albedo.a * pow(NdotR, 16.0) * atten;
+
+         // Step 8: Add this light's contribution to the final color
+         fragcolor += diff + spec;
+      }
+   }
+
+   // Step 9: Output final color with full opacity
+   outFragcolor = vec4(fragcolor, 1.0);
 }
 ```
 
 The main composition pass is a full-screen render that applies the lighting calculations:
 
 ```cpp
+// This function builds the command buffers for the composition pass
+// These command buffers draw a full-screen triangle that executes our lighting shader
 void buildCommandBuffers()
 {
-    VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
-
-    VkClearValue clearValues[2];
-    clearValues[0].color = { { 0.0f, 0.0f, 0.2f, 0.0f } };
-    clearValues[1].depthStencil = { 1.0f, 0 };
-
-    VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
-    renderPassBeginInfo.renderPass = renderPass;
-    renderPassBeginInfo.renderArea.offset.x = 0;
-    renderPassBeginInfo.renderArea.offset.y = 0;
-    renderPassBeginInfo.renderArea.extent.width = width;
-    renderPassBeginInfo.renderArea.extent.height = height;
-    renderPassBeginInfo.clearValueCount = 2;
-    renderPassBeginInfo.pClearValues = clearValues;
-
-    for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
-    {
-        renderPassBeginInfo.framebuffer = frameBuffers[i];
-
-        VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
-
-        vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-        VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
-        vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
-
-        VkRect2D scissor = vks::initializers::rect2D(width, height, 0, 0);
-        vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
-
-        vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets.composition, 0, nullptr);
-
-        vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.composition);
-        
-        // Final composition
-        // This is done by simply drawing a full screen quad
-        // The fragment shader then combines the deferred attachments into the final image
-        // Note: Also used for debug display if debugDisplayTarget > 0
-        vkCmdDraw(drawCmdBuffers[i], 3, 1, 0, 0);
-
-        drawUI(drawCmdBuffers[i]);
-
-        vkCmdEndRenderPass(drawCmdBuffers[i]);
-
-        VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
-    }
+   // Standard command buffer begin info structure
+   VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+   
+   // Set clear values for the swapchain framebuffer
+   VkClearValue clearValues[2];
+   clearValues[0].color = { { 0.0f, 0.0f, 0.2f, 0.0f } };  // Dark blue background color
+   clearValues[1].depthStencil = { 1.0f, 0 };              // Far plane for depth buffer, 0 for stencil
+   
+   // Set up render pass begin info for the composition pass
+   VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+   renderPassBeginInfo.renderPass = renderPass;            // The default render pass (for final output)
+   renderPassBeginInfo.renderArea.offset.x = 0;            // Start at top-left corner
+   renderPassBeginInfo.renderArea.offset.y = 0;
+   renderPassBeginInfo.renderArea.extent.width = width;    // Full window size
+   renderPassBeginInfo.renderArea.extent.height = height;
+   renderPassBeginInfo.clearValueCount = 2;                // One for color, one for depth/stencil
+   renderPassBeginInfo.pClearValues = clearValues;
+   
+   // Create a command buffer for each swapchain image
+   for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
+   {
+      // Set the framebuffer for this specific swapchain image
+      renderPassBeginInfo.framebuffer = frameBuffers[i];
+      
+      // Begin recording commands for this framebuffer
+      VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
+      
+      // Begin the render pass - this is when the framebuffer is cleared
+      vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+      
+      // Set the viewport to cover the entire framebuffer
+      VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
+      vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
+      
+      // Set the scissor rectangle to match the viewport
+      VkRect2D scissor = vks::initializers::rect2D(width, height, 0, 0);
+      vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
+      
+      // Bind the descriptor set that contains the G-Buffer texture samplers
+      // This gives our shader access to the G-Buffer textures filled in the previous pass
+      vkCmdBindDescriptorSets(
+         drawCmdBuffers[i],                      // Command buffer
+         VK_PIPELINE_BIND_POINT_GRAPHICS,        // Pipeline bind point (graphics, not compute)
+         pipelineLayout,                         // Pipeline layout with descriptor set layouts
+         0,                                      // First set index
+         1,                                      // Number of sets to bind
+         &descriptorSets.composition,            // The descriptor set with G-Buffer samplers
+         0, nullptr);                            // No dynamic offsets
+      
+      // Bind the composition pipeline that contains the lighting shader
+      vkCmdBindPipeline(
+         drawCmdBuffers[i],                      // Command buffer
+         VK_PIPELINE_BIND_POINT_GRAPHICS,        // Pipeline bind point
+         pipelines.composition);                 // The composition pipeline
+      
+      // Final composition - this is the key part of deferred rendering's second pass
+      // We draw a full screen triangle (3 vertices) in a single instance
+      // The vertex shader generates vertices procedurally (no vertex buffer needed)
+      // The fragment shader samples the G-Buffer textures and calculates lighting
+      vkCmdDraw(
+         drawCmdBuffers[i],                      // Command buffer
+         3,                                      // Vertex count (for full-screen triangle)
+         1,                                      // Instance count
+         0, 0);                                  // First vertex and instance indices
+      
+      // Draw any UI elements on top of the rendered scene
+      drawUI(drawCmdBuffers[i]);
+      
+      // End the render pass
+      vkCmdEndRenderPass(drawCmdBuffers[i]);
+      
+      // Finish recording commands for this framebuffer
+      VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
+   }
 }
 ```
 
@@ -837,25 +996,81 @@ void buildCommandBuffers()
 We create two pipelines: one for the G-Buffer generation and one for the composition pass. The G-Buffer pipeline uses multiple render targets, while the composition pipeline is a simple full-screen quad.
 
 ```cpp
+// This function creates the two graphics pipelines needed for deferred rendering:
+// 1. G-Buffer pipeline for writing geometry data to multiple render targets
+// 2. Composition pipeline for the lighting pass using the G-Buffer data
 void preparePipelines()
 {
-   // Pipeline layout
-   VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = vks::initializers::pipelineLayoutCreateInfo(&descriptorSetLayout, 1);
+   // Create a pipeline layout that defines what descriptor sets our shaders will use
+   VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = vks::initializers::pipelineLayoutCreateInfo(
+      &descriptorSetLayout,                // The descriptor set layout defined earlier
+      1);                                  // Only one descriptor set layout
    VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout));
    
-   // Pipelines
-   VkPipelineInputAssemblyStateCreateInfo inputAssemblyState = vks::initializers::pipelineInputAssemblyStateCreateInfo(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 0, VK_FALSE);
-   VkPipelineRasterizationStateCreateInfo rasterizationState = vks::initializers::pipelineRasterizationStateCreateInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, 0);
-   VkPipelineColorBlendAttachmentState blendAttachmentState = vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE);
-   VkPipelineColorBlendStateCreateInfo colorBlendState = vks::initializers::pipelineColorBlendStateCreateInfo(1, &blendAttachmentState);
-   VkPipelineDepthStencilStateCreateInfo depthStencilState = vks::initializers::pipelineDepthStencilStateCreateInfo(VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL);
-   VkPipelineViewportStateCreateInfo viewportState = vks::initializers::pipelineViewportStateCreateInfo(1, 1, 0);
-   VkPipelineMultisampleStateCreateInfo multisampleState = vks::initializers::pipelineMultisampleStateCreateInfo(VK_SAMPLE_COUNT_1_BIT, 0);
-   std::vector<VkDynamicState> dynamicStateEnables = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-   VkPipelineDynamicStateCreateInfo dynamicState = vks::initializers::pipelineDynamicStateCreateInfo(dynamicStateEnables);
+   // Set up common pipeline state configurations that will be shared between both pipelines
+   
+   // Input assembly - defines how to interpret vertex data
+   VkPipelineInputAssemblyStateCreateInfo inputAssemblyState =
+      vks::initializers::pipelineInputAssemblyStateCreateInfo(
+         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  // Use triangle lists
+         0,                                    // No primitive restart index
+         VK_FALSE);                            // Don't use primitive restart
+   
+   // Rasterization state - controls polygon rasterization
+   VkPipelineRasterizationStateCreateInfo rasterizationState =
+      vks::initializers::pipelineRasterizationStateCreateInfo(
+         VK_POLYGON_MODE_FILL,                 // Fill polygons with fragments
+         VK_CULL_MODE_BACK_BIT,                // Cull back faces
+         VK_FRONT_FACE_COUNTER_CLOCKWISE,      // Counter-clockwise vertex order defines front faces
+         0);                                   // No depth bias
+   
+   // Color blend attachment - controls how color output is blended
+   VkPipelineColorBlendAttachmentState blendAttachmentState =
+      vks::initializers::pipelineColorBlendAttachmentState(
+         0xf,                                  // Write to all color components (RGBA)
+         VK_FALSE);                            // Disable blending (no transparency
+         
+   // Color blend state - container for attachment blend states
+   VkPipelineColorBlendStateCreateInfo colorBlendState =
+      vks::initializers::pipelineColorBlendStateCreateInfo(
+         1,                                    // Initially one attachment
+         &blendAttachmentState);               // The blend attachment state
+      
+   // Depth stencil state - controls depth and stencil tests
+   VkPipelineDepthStencilStateCreateInfo depthStencilState =
+      vks::initializers::pipelineDepthStencilStateCreateInfo(
+         VK_TRUE,                              // Enable depth test
+         VK_TRUE,                              // Enable depth write
+         VK_COMPARE_OP_LESS_OR_EQUAL);         // Depth test function
+         
+   // Viewport state - defines viewport and scissor regions
+   VkPipelineViewportStateCreateInfo viewportState =
+      vks::initializers::pipelineViewportStateCreateInfo(
+         1,                                    // One viewport
+         1,                                    // One scissor rectangle
+         0);                                   // No static viewport/scissor
+         
+   // Multisample state - controls multisampling for anti-aliasing
+   VkPipelineMultisampleStateCreateInfo multisampleState =
+      vks::initializers::pipelineMultisampleStateCreateInfo(
+         VK_SAMPLE_COUNT_1_BIT,                // No multisampling (1 sample per pixel)
+         0);                                   // No shader sample shading
+         
+   // Dynamic state - list of states that can be changed dynamically
+   std::vector<VkDynamicState> dynamicStateEnables = {
+      VK_DYNAMIC_STATE_VIEWPORT,                // Dynamic viewport
+      VK_DYNAMIC_STATE_SCISSOR                  // Dynamic scissor
+   };
+   VkPipelineDynamicStateCreateInfo dynamicState =
+      vks::initializers::pipelineDynamicStateCreateInfo(dynamicStateEnables);   // List of dynamic states
+      
+   // Shader stages array - will hold both vertex and fragment shader
    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages;
    
-   VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(pipelineLayout, renderPass);
+   // Base pipeline creation structure with shared configuration
+   VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(
+      pipelineLayout,                          // Our pipeline layout with descriptors
+      renderPass);                             // Default render pass (for final output)
    pipelineCI.pInputAssemblyState = &inputAssemblyState;
    pipelineCI.pRasterizationState = &rasterizationState;
    pipelineCI.pColorBlendState = &colorBlendState;
@@ -866,38 +1081,63 @@ void preparePipelines()
    pipelineCI.stageCount = static_cast<uint32_t>(shaderStages.size());
    pipelineCI.pStages = shaderStages.data();
    
-   // Final fullscreen composition pass pipeline
+   // PIPELINE 1: COMPOSITION PIPELINE FOR LIGHTING PASS
+   // This pipeline renders a full-screen triangle to apply lighting calculations
+   
+   // For the full-screen triangle, we use front-face culling
+   // This is because the large triangle extends beyond the screen
+   // and we only want to render the part inside the screen
    rasterizationState.cullMode = VK_CULL_MODE_FRONT_BIT;
+   
+   // Load deferred lighting shaders
    shaderStages[0] = loadShader(getShadersPath() + "deferred/deferred.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
    shaderStages[1] = loadShader(getShadersPath() + "deferred/deferred.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
-   // Empty vertex input state, vertices are generated by the vertex shader
+   
+   // No vertex input state - the vertex shader generates vertices procedurally
+   // This is a key optimization for the full-screen pass
    VkPipelineVertexInputStateCreateInfo emptyInputState = vks::initializers::pipelineVertexInputStateCreateInfo();
    pipelineCI.pVertexInputState = &emptyInputState;
+   
+   // Create the composition pipeline
    VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipelines.composition));
    
-   // Vertex input state from glTF model for pipeline rendering models
-   pipelineCI.pVertexInputState = vkglTF::Vertex::getPipelineVertexInputState({vkglTF::VertexComponent::Position, vkglTF::VertexComponent::UV, vkglTF::VertexComponent::Color, vkglTF::VertexComponent::Normal, vkglTF::VertexComponent::Tangent});
+   // PIPELINE 2: G-BUFFER PIPELINE FOR GEOMETRY PASS
+   
+   // Set vertex input state for the glTF model
+   // This defines the vertex attributes and bindings for the 3D models
+   pipelineCI.pVertexInputState = vkglTF::Vertex::getPipelineVertexInputState({
+   vkglTF::VertexComponent::Position,     // World position
+   vkglTF::VertexComponent::UV,           // Texture coordinates
+   vkglTF::VertexComponent::Color,        // Vertex colors
+   vkglTF::VertexComponent::Normal,       // Surface normals
+   vkglTF::VertexComponent::Tangent       // Tangent vectors for normal mapping
+   });
+   
+   // Switch back to back-face culling for normal geometry rendering
    rasterizationState.cullMode = VK_CULL_MODE_BACK_BIT;
    
-   // Offscreen pipeline
+   // Load multiple render target (MRT) shaders for G-Buffer generation
    shaderStages[0] = loadShader(getShadersPath() + "deferred/mrt.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
    shaderStages[1] = loadShader(getShadersPath() + "deferred/mrt.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
    
-   // Separate render pass
+   // Use the offscreen render pass created for G-Buffer generation
    pipelineCI.renderPass = offScreenFrameBuf.renderPass;
    
-   // Blend attachment states required for all color attachments
-   // This is important, as color write mask will otherwise be 0x0 and you
-   // won't see anything rendered to the attachment
+   // Create blend states for multiple render targets (G-Buffer)
+   // Each of our three G-Buffer attachments needs its own blend state
+   // Even though we're not actually blending, we need to enable color writes for each attachment
    std::array<VkPipelineColorBlendAttachmentState, 3> blendAttachmentStates = {
-      vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE),
-      vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE),
-      vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE)
+      vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE),  // Position attachment
+      vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE),  // Normal attachment
+      vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE)   // Albedo attachment
    };
    
+   // Update color blend state to use all three G-Buffer attachments
+   // This is critical - we need to write to all attachments simultaneously
    colorBlendState.attachmentCount = static_cast<uint32_t>(blendAttachmentStates.size());
    colorBlendState.pAttachments = blendAttachmentStates.data();
    
+   // Create the G-Buffer generation pipeline
    VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipelines.offscreen));
 }
 ```
@@ -905,60 +1145,61 @@ void preparePipelines()
 
 ### 6. Light Management and Animation
 
-The example includes code for managing lights and even animating them:
+Here is the code for managing lights and animating them:
 
 ```cpp
+// Update lights and parameters passed to the composition shaders
 void updateUniformBufferComposition()
 {
-    // White
-    uniformDataComposition.lights[0].position = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
-    uniformDataComposition.lights[0].color = glm::vec3(1.5f);
-    uniformDataComposition.lights[0].radius = 15.0f * 0.25f;
-    // Red
-    uniformDataComposition.lights[1].position = glm::vec4(-2.0f, 0.0f, 0.0f, 0.0f);
-    uniformDataComposition.lights[1].color = glm::vec3(1.0f, 0.0f, 0.0f);
-    uniformDataComposition.lights[1].radius = 15.0f;
-    // Blue
-    uniformDataComposition.lights[2].position = glm::vec4(2.0f, -1.0f, 0.0f, 0.0f);
-    uniformDataComposition.lights[2].color = glm::vec3(0.0f, 0.0f, 2.5f);
-    uniformDataComposition.lights[2].radius = 5.0f;
-    // Yellow
-    uniformDataComposition.lights[3].position = glm::vec4(0.0f, -0.9f, 0.5f, 0.0f);
-    uniformDataComposition.lights[3].color = glm::vec3(1.0f, 1.0f, 0.0f);
-    uniformDataComposition.lights[3].radius = 2.0f;
-    // Green
-    uniformDataComposition.lights[4].position = glm::vec4(0.0f, -0.5f, 0.0f, 0.0f);
-    uniformDataComposition.lights[4].color = glm::vec3(0.0f, 1.0f, 0.2f);
-    uniformDataComposition.lights[4].radius = 5.0f;
-    // Yellow
-    uniformDataComposition.lights[5].position = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
-    uniformDataComposition.lights[5].color = glm::vec3(1.0f, 0.7f, 0.3f);
-    uniformDataComposition.lights[5].radius = 25.0f;
-
-    // Animate the lights
-    if (!paused) {
-        uniformDataComposition.lights[0].position.x = sin(glm::radians(360.0f * timer)) * 5.0f;
-        uniformDataComposition.lights[0].position.z = cos(glm::radians(360.0f * timer)) * 5.0f;
-
-        uniformDataComposition.lights[1].position.x = -4.0f + sin(glm::radians(360.0f * timer) + 45.0f) * 2.0f;
-        uniformDataComposition.lights[1].position.z = 0.0f + cos(glm::radians(360.0f * timer) + 45.0f) * 2.0f;
-
-        uniformDataComposition.lights[2].position.x = 4.0f + sin(glm::radians(360.0f * timer)) * 2.0f;
-        uniformDataComposition.lights[2].position.z = 0.0f + cos(glm::radians(360.0f * timer)) * 2.0f;
-
-        uniformDataComposition.lights[4].position.x = 0.0f + sin(glm::radians(360.0f * timer + 90.0f)) * 5.0f;
-        uniformDataComposition.lights[4].position.z = 0.0f - cos(glm::radians(360.0f * timer + 45.0f)) * 5.0f;
-
-        uniformDataComposition.lights[5].position.x = 0.0f + sin(glm::radians(-360.0f * timer + 135.0f)) * 10.0f;
-        uniformDataComposition.lights[5].position.z = 0.0f - cos(glm::radians(-360.0f * timer - 45.0f)) * 10.0f;
-    }
-
-    // Current view position
-    uniformDataComposition.viewPos = glm::vec4(camera.position, 0.0f) * glm::vec4(-1.0f, 1.0f, -1.0f, 1.0f);
-
-    uniformDataComposition.debugDisplayTarget = debugDisplayTarget;
-
-    memcpy(uniformBuffers.composition.mapped, &uniformDataComposition, sizeof(UniformDataComposition));
+   // White
+   uniformDataComposition.lights[0].position = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
+   uniformDataComposition.lights[0].color = glm::vec3(1.5f);
+   uniformDataComposition.lights[0].radius = 15.0f * 0.25f;
+   // Red
+   uniformDataComposition.lights[1].position = glm::vec4(-2.0f, 0.0f, 0.0f, 0.0f);
+   uniformDataComposition.lights[1].color = glm::vec3(1.0f, 0.0f, 0.0f);
+   uniformDataComposition.lights[1].radius = 15.0f;
+   // Blue
+   uniformDataComposition.lights[2].position = glm::vec4(2.0f, -1.0f, 0.0f, 0.0f);
+   uniformDataComposition.lights[2].color = glm::vec3(0.0f, 0.0f, 2.5f);
+   uniformDataComposition.lights[2].radius = 5.0f;
+   // Yellow
+   uniformDataComposition.lights[3].position = glm::vec4(0.0f, -0.9f, 0.5f, 0.0f);
+   uniformDataComposition.lights[3].color = glm::vec3(1.0f, 1.0f, 0.0f);
+   uniformDataComposition.lights[3].radius = 2.0f;
+   // Green
+   uniformDataComposition.lights[4].position = glm::vec4(0.0f, -0.5f, 0.0f, 0.0f);
+   uniformDataComposition.lights[4].color = glm::vec3(0.0f, 1.0f, 0.2f);
+   uniformDataComposition.lights[4].radius = 5.0f;
+   // Yellow
+   uniformDataComposition.lights[5].position = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
+   uniformDataComposition.lights[5].color = glm::vec3(1.0f, 0.7f, 0.3f);
+   uniformDataComposition.lights[5].radius = 25.0f;
+   
+   // Animate the lights
+   if (!paused) {
+      uniformDataComposition.lights[0].position.x = sin(glm::radians(360.0f * timer)) * 5.0f;
+      uniformDataComposition.lights[0].position.z = cos(glm::radians(360.0f * timer)) * 5.0f;
+      
+      uniformDataComposition.lights[1].position.x = -4.0f + sin(glm::radians(360.0f * timer) + 45.0f) * 2.0f;
+      uniformDataComposition.lights[1].position.z = 0.0f + cos(glm::radians(360.0f * timer) + 45.0f) * 2.0f;
+      
+      uniformDataComposition.lights[2].position.x = 4.0f + sin(glm::radians(360.0f * timer)) * 2.0f;
+      uniformDataComposition.lights[2].position.z = 0.0f + cos(glm::radians(360.0f * timer)) * 2.0f;
+      
+      uniformDataComposition.lights[4].position.x = 0.0f + sin(glm::radians(360.0f * timer + 90.0f)) * 5.0f;
+      uniformDataComposition.lights[4].position.z = 0.0f - cos(glm::radians(360.0f * timer + 45.0f)) * 5.0f;
+      
+      uniformDataComposition.lights[5].position.x = 0.0f + sin(glm::radians(-360.0f * timer + 135.0f)) * 10.0f;
+      uniformDataComposition.lights[5].position.z = 0.0f - cos(glm::radians(-360.0f * timer - 45.0f)) * 10.0f;
+   }
+   
+   // Current view position
+   uniformDataComposition.viewPos = glm::vec4(camera.position, 0.0f) * glm::vec4(-1.0f, 1.0f, -1.0f, 1.0f);
+   
+   uniformDataComposition.debugDisplayTarget = debugDisplayTarget;
+   
+   memcpy(uniformBuffers.composition.mapped, &uniformDataComposition, sizeof(UniformDataComposition));
 }
 ```
 ### 6. Preparing uniform buffers
@@ -996,60 +1237,6 @@ void updateUniformBufferOffscreen()
      uniformDataOffscreen.model = glm::mat4(1.0f);
      memcpy(uniformBuffers.offscreen.mapped, &uniformDataOffscreen, sizeof(UniformDataOffscreen));
 }
-
-// Update lights and parameters passed to the composition shaders
-void updateUniformBufferComposition()
-{
-     // White
-     uniformDataComposition.lights[0].position = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
-     uniformDataComposition.lights[0].color = glm::vec3(1.5f);
-     uniformDataComposition.lights[0].radius = 15.0f * 0.25f;
-     // Red
-     uniformDataComposition.lights[1].position = glm::vec4(-2.0f, 0.0f, 0.0f, 0.0f);
-     uniformDataComposition.lights[1].color = glm::vec3(1.0f, 0.0f, 0.0f);
-     uniformDataComposition.lights[1].radius = 15.0f;
-     // Blue
-     uniformDataComposition.lights[2].position = glm::vec4(2.0f, -1.0f, 0.0f, 0.0f);
-     uniformDataComposition.lights[2].color = glm::vec3(0.0f, 0.0f, 2.5f);
-     uniformDataComposition.lights[2].radius = 5.0f;
-     // Yellow
-     uniformDataComposition.lights[3].position = glm::vec4(0.0f, -0.9f, 0.5f, 0.0f);
-     uniformDataComposition.lights[3].color = glm::vec3(1.0f, 1.0f, 0.0f);
-     uniformDataComposition.lights[3].radius = 2.0f;
-     // Green
-     uniformDataComposition.lights[4].position = glm::vec4(0.0f, -0.5f, 0.0f, 0.0f);
-     uniformDataComposition.lights[4].color = glm::vec3(0.0f, 1.0f, 0.2f);
-     uniformDataComposition.lights[4].radius = 5.0f;
-     // Yellow
-     uniformDataComposition.lights[5].position = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
-     uniformDataComposition.lights[5].color = glm::vec3(1.0f, 0.7f, 0.3f);
-     uniformDataComposition.lights[5].radius = 25.0f;
-
-     // Animate the lights
-     if (!paused) {
-         uniformDataComposition.lights[0].position.x = sin(glm::radians(360.0f * timer)) * 5.0f;
-         uniformDataComposition.lights[0].position.z = cos(glm::radians(360.0f * timer)) * 5.0f;
-
-         uniformDataComposition.lights[1].position.x = -4.0f + sin(glm::radians(360.0f * timer) + 45.0f) * 2.0f;
-         uniformDataComposition.lights[1].position.z = 0.0f + cos(glm::radians(360.0f * timer) + 45.0f) * 2.0f;
-
-         uniformDataComposition.lights[2].position.x = 4.0f + sin(glm::radians(360.0f * timer)) * 2.0f;
-         uniformDataComposition.lights[2].position.z = 0.0f + cos(glm::radians(360.0f * timer)) * 2.0f;
-
-         uniformDataComposition.lights[4].position.x = 0.0f + sin(glm::radians(360.0f * timer + 90.0f)) * 5.0f;
-         uniformDataComposition.lights[4].position.z = 0.0f - cos(glm::radians(360.0f * timer + 45.0f)) * 5.0f;
-
-         uniformDataComposition.lights[5].position.x = 0.0f + sin(glm::radians(-360.0f * timer + 135.0f)) * 10.0f;
-         uniformDataComposition.lights[5].position.z = 0.0f - cos(glm::radians(-360.0f * timer - 45.0f)) * 10.0f;
-     }
-
-     // Current view position
-     uniformDataComposition.viewPos = glm::vec4(camera.position, 0.0f) * glm::vec4(-1.0f, 1.0f, -1.0f, 1.0f);
-
-     uniformDataComposition.debugDisplayTarget = debugDisplayTarget;
-
-     memcpy(uniformBuffers.composition.mapped, &uniformDataComposition, sizeof(UniformDataComposition));
-}
 ```
 
 ### 7. Wrapping up preparations
@@ -1083,9 +1270,11 @@ void draw()
     // The scene render command buffer has to wait for the offscreen
     // rendering to be finished before we can use the framebuffer
     // color image for sampling during final rendering
+    
     // To ensure this we use a dedicated offscreen synchronization
     // semaphore that will be signaled when offscreen rendering
     // has been finished
+    
     // This is necessary as an implementation may start both
     // command buffers at the same time, there is no guarantee
     // that command buffers will be executed in the order they
@@ -1146,7 +1335,7 @@ Here's the complete deferred rendering process:
 
 ## Debugging Features
 
-The example includes a useful debugging feature that allows viewing the individual components of the G-Buffer:
+The code includes a useful debugging feature that allows viewing the individual components of the G-Buffer:
 
 `deferred.frag`
 ```glsl
